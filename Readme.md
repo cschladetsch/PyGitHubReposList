@@ -1,4 +1,4 @@
-# github_repos
+# Github Repos
 
 A small Python script that lists all of a GitHub user's repositories, sorted by stars, views, clones and other metrics, and keeps a local history so the numbers mean more than GitHub's 14-day window.
 
