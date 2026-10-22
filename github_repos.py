@@ -2,13 +2,12 @@
 """List a GitHub user's repos, sorted by stars, views, clones and more.
 
 GitHub only keeps 14 days of traffic data, so this script stores every run in a
-local SQLite database. Run it regularly (cron, Task Scheduler) and the "views_all"
-and "clones_all" columns become true cumulative totals, and the star delta column
-shows growth over time.
+local SQLite database. Run it regularly (cron, Task Scheduler) and the star delta
+column shows growth over time. Cumulative views_all and clones_all totals from that
+history are included in --json and --csv output.
 
 Examples:
     python github_repos.py                          # sorted by stars, then views
-    python github_repos.py --sort views_all         # cumulative tracked views
     python github_repos.py --sort stars_delta       # fastest growing (needs history)
     python github_repos.py --no-traffic --no-db     # public data only, no token needed
     python github_repos.py --json > repos.json
@@ -29,7 +28,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -41,11 +40,10 @@ DEFAULT_DB = Path.home() / ".github_repos.db"
 MAX_WAIT = 120  # never sleep longer than this on a rate limit
 
 SORT_KEYS = [
-    "stars", "stars_delta", "views", "views_all", "uniques",
-    "clones", "clones_all", "forks", "issues", "updated", "name",
+    "stars", "stars_delta", "views", "uniques", "clones",
+    "forks", "issues", "updated", "name",
 ]
-NUMERIC = {"stars", "stars_delta", "forks", "issues", "views", "views_all",
-           "uniques", "clones", "clones_all"}
+NUMERIC = {"stars", "stars_delta", "forks", "issues", "views", "uniques", "clones"}
 CSV_FIELDS = [
     "name", "url", "stars", "stars_delta", "forks", "issues", "views", "views_all",
     "uniques", "clones", "clones_all", "language", "license", "topics", "updated",
@@ -119,6 +117,8 @@ class GitHub:
                 continue
             wait = rate_limit_wait(resp)
             if wait is not None and not last:
+                print(f"\nRate limited (HTTP {resp.status_code}), waiting {wait:.0f}s...",
+                      file=sys.stderr, flush=True)
                 time.sleep(wait)
                 continue
             if resp.status_code >= 500 and not last:
@@ -172,11 +172,21 @@ def fetch_traffic(gh, full_name):
     return data, None
 
 
-def fetch_all_traffic(gh, repos, workers=8):
+def fetch_all_traffic(gh, repos, workers=8, progress=None):
+    """Fetch traffic for every repo. progress(done, total) is called as results arrive.
+    Ctrl-C returns promptly instead of waiting for every queued request."""
     names = [r["full_name"] for r in repos]
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(lambda n: fetch_traffic(gh, n), names))
-    return dict(zip(names, results))
+    results = {}
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {pool.submit(fetch_traffic, gh, n): n for n in names}
+        for done, fut in enumerate(as_completed(futures), 1):
+            results[futures[fut]] = fut.result()
+            if progress:
+                progress(done, len(names))
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return results
 
 
 def fetch_star_dates(gh, full_name):
@@ -315,8 +325,7 @@ def flags(row):
 def render_table(rows, days):
     cols = [("name", "name"), ("stars", "stars"), ("stars_delta", f"+{days}d"),
             ("forks", "forks"), ("issues", "issues"), ("views", "views"),
-            ("views_all", "views_all"), ("uniques", "uniques"), ("clones", "clones"),
-            ("clones_all", "clones_all"), ("language", "language"),
+            ("uniques", "uniques"), ("clones", "clones"), ("language", "language"),
             ("updated", "updated"), ("flags", "flags")]
 
     def cell(row, key):
@@ -410,7 +419,9 @@ def main(argv=None):
             print_sources(gh, qualify(args.sources, args.user))
             return 0
 
+        print(f"Fetching repo list for {args.user}...", file=sys.stderr, flush=True)
         repos = fetch_repos(gh, args.user, not args.no_forks, not args.no_archived)
+        print(f"Found {len(repos)} repos.", file=sys.stderr, flush=True)
     except requests.HTTPError as exc:
         code = exc.response.status_code if exc.response is not None else "?"
         hint = " (bad or expired token?)" if code == 401 else ""
@@ -427,7 +438,12 @@ def main(argv=None):
         print("No token found (GITHUB_TOKEN, GH_TOKEN or `gh auth login`): "
               "skipping views and clones.", file=sys.stderr)
     else:
-        traffic = fetch_all_traffic(gh, repos)
+        def progress(done, total):
+            print(f"\rFetching traffic {done}/{total}", end="", file=sys.stderr, flush=True)
+            if done == total:
+                print(file=sys.stderr)
+
+        traffic = fetch_all_traffic(gh, repos, progress=progress)
         errors = Counter(err for _, err in traffic.values() if err)
         if errors:
             detail = ", ".join(f"HTTP {code}: {n}" for code, n in sorted(errors.items()))
@@ -461,4 +477,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)

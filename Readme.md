@@ -1,4 +1,4 @@
-# Github Repos
+# github_repos
 
 A small Python script that lists all of a GitHub user's repositories, sorted by stars, views, clones and other metrics, and keeps a local history so the numbers mean more than GitHub's 14-day window.
 
@@ -8,7 +8,8 @@ A small Python script that lists all of a GitHub user's repositories, sorted by 
 
 - Lists every repo owned by a user (including private repos when authenticated as that user)
 - Shows stars, star growth, forks, open issues, views, unique views, clones, language, last push date, and fork/private/archived flags
-- Keeps a SQLite history, so cumulative views and clones and star growth build up over repeated runs
+- Keeps a SQLite history, so star growth builds up over repeated runs (cumulative views and clones are in the JSON and CSV output)
+- Shows progress while fetching, and Ctrl-C exits promptly
 - Distinguishes "no data" from zero: repos whose traffic you cannot read show `-`
 - Retries with backoff on rate limits and server errors
 - Per-repo star history by month, and referrer and popular path reports
@@ -37,7 +38,6 @@ A classic token needs the `repo` scope. A fine-grained token needs read access t
 
 ```
 python github_repos.py                          # sorted by stars, then views
-python github_repos.py --sort views_all         # cumulative tracked views
 python github_repos.py --sort stars_delta       # fastest growing (needs history)
 python github_repos.py --no-forks --top 50      # top 50 non-fork repos
 python github_repos.py --no-traffic --no-db     # public data only, no token needed
@@ -52,7 +52,7 @@ python github_repos.py --sources CppKAI         # referrers and popular paths fo
 | Option                  | Description                                                                 |
 | ----------------------- | --------------------------------------------------------------------------- |
 | `--user`                | GitHub username (default: `cschladetsch`)                                   |
-| `--sort`                | `stars`, `stars_delta`, `views`, `views_all`, `uniques`, `clones`, `clones_all`, `forks`, `issues`, `updated`, `name` |
+| `--sort`                | `stars`, `stars_delta`, `views`, `uniques`, `clones`, `forks`, `issues`, `updated`, `name` |
 | `--days N`              | Window for the star growth column (default: 30)                             |
 | `--db PATH`             | History database (default: `~/.github_repos.db`)                            |
 | `--no-db`               | Do not read or write history                                                |
@@ -71,7 +71,7 @@ Ties are broken by stars, then views, then name, so the ordering is stable. Rows
 
 GitHub keeps only 14 days of traffic. Each run merges that window into the SQLite database, so:
 
-- `views_all` and `clones_all` are cumulative totals since the first run
+- `views_all` and `clones_all` in the JSON and CSV output are cumulative totals since the first run
 - the `+30d` column shows stars gained since the newest snapshot that is at least 30 days old, and shows `-` until such a snapshot exists
 
 Run the script on a schedule (cron, Task Scheduler) at least once every two weeks to avoid gaps in traffic history. Running it daily also gives the star growth column finer data.
@@ -81,8 +81,8 @@ Run the script on a schedule (cron, Task Scheduler) at least once every two week
 A plain-text table followed by a totals line:
 
 ```
-name        stars  +30d  forks  issues  views  views_all  uniques  clones  clones_all  language  updated     flags
-----------  -----  ----  -----  ------  -----  ---------  -------  ------  ----------  --------  ----------  -----
+name        stars  +30d  forks  issues  views  uniques  clones  language  updated     flags
+----------  -----  ----  -----  ------  -----  -------  ------  --------  ----------  -----
 ...
 
 282 repos, 1234 stars, 5678 views (last 14 days)
